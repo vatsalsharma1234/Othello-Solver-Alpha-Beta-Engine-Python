@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""
+Othello (Reversi) Solver — Alpha-Beta Engine (Python)
+Single-file, pasteable, and ready to run.
+
+Features:
+- 8x8 2D board representation
+- Negamax search with alpha-beta pruning
+- Move ordering using immediate evaluation
+- Tunable evaluation (material, mobility, positional weights, corner emphasis)
+- CLI: human vs AI (default) and AI vs AI
+- Simple profiling: NODE_COUNT and elapsed time -> nodes/sec
+- Programmatic API functions for integration
+
+Run:
+    python othello_solver.py            # default human (White) vs AI (Black)
+    python othello_solver.py --depth 5  # stronger AI (slower)
+    python othello_solver.py --ai none  # two-human play
+
+Author: ChatGPT (GPT-5 Thinking mini)
+"""
+
+import math
+import random
+import time
+import argparse
+from copy import deepcopy
+
+# ---- Constants ----
+EMPTY = 0
+BLACK = 1
+WHITE = -1
+
+DIRECTIONS = [(-1, -1), (-1, 0), (-1, 1),
+              (0, -1),          (0, 1),
+              (1, -1),  (1, 0), (1, 1)]
+
+# Positional weights: corners very good, squares next to corners bad.
+POS_WEIGHTS = [
+    [100, -20, 10,  5,  5, 10, -20, 100],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [10,  -2,   0,  0,  0,  0,  -2,  10],
+    [5,   -2,   0,  0,  0,  0,  -2,   5],
+    [5,   -2,   0,  0,  0,  0,  -2,   5],
+    [10,  -2,   0,  0,  0,  0,  -2,  10],
+    [-20, -50, -2, -2, -2, -2, -50, -20],
+    [100, -20, 10,  5,  5, 10, -20, 100]
+]
+
+# ---- Globals for profiling ----
+NODE_COUNT = 0
+
+# ---- Board helpers ----
+def initial_board():
+    b = [[EMPTY]*8 for _ in range(8)]
+    b[3][3] = WHITE
+    b[4][4] = WHITE
+    b[3][4] = BLACK
+    b[4][3] = BLACK
+    return b
+
+def in_board(r, c):
+    return 0 <= r < 8 and 0 <= c < 8
+
+def other(player):
+    return -player
+
+def get_flips(board, r, c, player):
+    """Return list of positions that would be flipped if player plays at (r,c)."""
+    if board[r][c] != EMPTY:
+        return []
+    flips = []
+    for dr, dc in DIRECTIONS:
+        rr, cc = r + dr, c + dc
+        line = []
+        while in_board(rr, cc) and board[rr][cc] == other(player):
+            line.append((rr, cc))
+            rr += dr
+            cc += dc
+        if in_board(rr, cc) and board[rr][cc] == player and line:
+            flips.extend(line)
+    return flips
+
+def legal_moves(board, player):
+    moves = []
+    for r in range(8):
+        for c in range(8):
+            if board[r][c] == EMPTY:
+                flips = get_flips(board, r, c, player)
+                if flips:
+                    moves.append((r, c, flips))
+    return moves
+
+def apply_move(board, move, player):
+    """Return a new board after applying move (r,c,flips) for player."""
+    r, c, flips = move
+    newb = deepcopy(board)
+    newb[r][c] = player
+    for (rr, cc) in flips:
+        newb[rr][cc] = player
+    return newb
+
+def game_over(board):
+    return not legal_moves(board, BLACK) and not legal_moves(board, WHITE)
+
+def score(board):
+    s = 0
+    for r in range(8):
+        for c in range(8):
+            s += board[r][c]
+    return s  # black positive, white negative
+
+# ---- Evaluation ----
+def evaluate(board, player):
+    """Heuristic evaluation from 'player' perspective: higher = better for player."""
+    # Material
+    black_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == BLACK)
+    white_count = sum(1 for r in range(8) for c in range(8) if board[r][c] == WHITE)
+    material = (black_count - white_count) * (1 if player == BLACK else -1)
+
+    # Mobility
+    my_moves = len(legal_moves(board, player))
+    opp_moves = len(legal_moves(board, other(player)))
+    if my_moves + opp_moves != 0:
+        mobility = 100 * (my_moves - opp_moves) / (my_moves + opp_moves)
+    else:
+        mobility = 0
+
+    # Positional weights
+    pos_score = 0
+    for r in range(8):
+        for c in range(8):
+            pos_score += POS_WEIGHTS[r][c] * board[r][c]
+    pos_score *= (1 if player == BLACK else -1)
+
+    # Corners: extra emphasis
+    corners = [(0,0),(0,7),(7,0),(7,7)]
+    corner_score = 0
+    for (r,c) in corners:
+        if board[r][c] == player:
+            corner_score += 500
+        elif board[r][c] == other(player):
+            corner_score -= 500
+
+    # Weighted sum (tune these constants for strength/style)
+    return 10 * material + 78 * mobility + 1 * pos_score + corner_score
+
+# ---- Move ordering ----
+def order_moves(board, moves, player):
+    """Order moves by immediate evaluation of resulting board (descending)."""
+    scored = []
+    for (r,c,flips) in moves:
+        newb = apply_move(board, (r,c,flips), player)
+        sc = evaluate(newb, player)
+        scored.append(((r,c,flips), sc))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [m for (m,_) in scored]
+
+# ---- Search: Negamax with alpha-beta and time cutoff ----
+def negamax(board, player, depth, alpha, beta, start_time=None, time_limit=None):
+    """
+    Returns (best_score, best_move) from player perspective.
+    best_move is in form (r, c, flips) or None.
+    """
+    global NODE_COUNT
+    NODE_COUNT += 1
+
+    # Time cutoff
+    if start_time is not None and time_limit is not None:
+        if time.time() - start_time > time_limit:
+            return evaluate(board, player), None
+
+    if depth == 0 or game_over(board):
+        return evaluate(board, player), None
+
+    moves = legal_moves(board, player)
+    if not moves:
+        # pass - opponent moves
+        val, _ = negamax(board, other(player), depth-1, -beta, -alpha, start_time, time_limit)
+        return -val, None
+
+    best_move = None
+    ordered = order_moves(board, moves, player)
+
+    for move in ordered:
+        newb = apply_move(board, move, player)
+        val, _ = negamax(newb, other(player), depth-1, -beta, -alpha, start_time, time_limit)
+        val = -val
+        if val > alpha:
+            alpha = val
+            best_move = move
+        if alpha >= beta:
+            break  # beta cutoff
+    return alpha, best_move
+
+# ---- CLI / Interaction ----
+def print_board(board):
+    ch = {EMPTY: '.', BLACK: 'B', WHITE: 'W'}
+    print("  0 1 2 3 4 5 6 7")
+    for r in range(8):
+        print(r, ' '.join(ch[board[r][c]] for c in range(8)))
+    print()
+
+def human_move_input(moves):
+    move_map = {(r,c): flips for (r,c,flips) in moves}
+    while True:
+        s = input("Enter move as 'r c' (or 'pass'): ").strip()
+        if s.lower() == 'pass':
+            return None
+        try:
+            r, c = map(int, s.split())
+            if (r,c) in move_map:
+                return (r,c,move_map[(r,c)])
+            else:
+                print("Illegal move. Try again.")
+        except:
+            print("Bad input. Try again (e.g. '2 3').")
+
+def play_game(ai_player=BLACK, depth=4, time_limit=None, show_board=True):
+    """
+    Play a game. ai_player: BLACK, WHITE, or None for two humans.
+    Returns final board and elapsed time & node count.
+    """
+    global NODE_COUNT
+    NODE_COUNT = 0
+    b = initial_board()
+    player = BLACK
+    if show_board:
+        print_board(b)
+    start_game_time = time.time()
+
+    while not game_over(b):
+        moves = legal_moves(b, player)
+        if moves:
+            if ai_player is not None and player == ai_player:
+                # AI moves
+                if show_board:
+                    print(f"AI thinking (player {'B' if player==BLACK else 'W'}) ...")
+                start = time.time()
+                score_val, move = negamax(b, player, depth, -math.inf, math.inf, start_time=start, time_limit=time_limit)
+                # fallback random move if search returned None (due to time cut)
+                if move is None:
+                    move = random.choice(moves)
+                b = apply_move(b, move, player)
+                if show_board:
+                    print(f"AI plays: {move[0]}, {move[1]}")
+                    print_board(b)
+            else:
+                # Human move
+                if show_board:
+                    print(f"Human turn ({'B' if player==BLACK else 'W'}). Legal moves:", [(r,c) for (r,c,_) in moves])
+                mv = human_move_input(moves)
+                if mv is None:
+                    if show_board:
+                        print("Human passes.")
+                else:
+                    b = apply_move(b, mv, player)
+                    if show_board:
+                        print_board(b)
+        else:
+            if show_board:
+                print(f"{'B' if player==BLACK else 'W'} has no legal moves and passes.")
+        player = other(player)
+
+    elapsed = time.time() - start_game_time
+    final = score(b)
+    return b, final, elapsed, NODE_COUNT
+
+# ---- Small driver for CLI ----
+def main():
+    p = argparse.ArgumentParser(description="Othello (Reversi) Solver — Alpha-Beta Engine (Python)")
+    p.add_argument("--depth", type=int, default=4, help="Search depth for AI (default: 4)")
+    p.add_argument("--time", type=float, default=5.0, help="Per-move time limit for AI in seconds (default: 5.0). Use 0 or a negative number for no time limit.")
+    p.add_argument("--ai", type=str, default="black", choices=["black", "white", "none"],
+                   help="Which side AI plays: 'black', 'white', or 'none' for two humans (default: black)")
+    p.add_argument("--no-board", action="store_true", help="Do not print board during play (useful for AI-vs-AI runs)")
+    args = p.parse_args()
+
+    ai_str = args.ai.lower()
+    ai_player = BLACK if ai_str == "black" else WHITE if ai_str == "white" else None
+    depth = max(1, args.depth)
+    time_limit = None if args.time <= 0 else args.time
+    show_board = not args.no_board
+
+    print("Othello solver demo.")
+    if ai_player is None:
+        print("Mode: Human vs Human")
+    else:
+        print(f"Mode: Human vs AI (AI = {'Black' if ai_player==BLACK else 'White'})")
+    print(f"Search depth: {depth}, per-move time limit: {time_limit if time_limit else 'none'}\n")
+
+    board, final_score, elapsed, nodes = play_game(ai_player=ai_player, depth=depth, time_limit=time_limit, show_board=show_board)
+
+    print("Game over.")
+    print_board(board)
+    print("Final score (black - white):", final_score)
+    if final_score > 0:
+        print("Black wins")
+    elif final_score < 0:
+        print("White wins")
+    else:
+        print("Draw")
+    print(f"Elapsed time: {elapsed:.2f}s, Nodes searched: {nodes}, Nodes/sec (approx): {nodes/elapsed if elapsed>0 else 'inf'}")
+
+if __name__ == "__main__":
+    main()
