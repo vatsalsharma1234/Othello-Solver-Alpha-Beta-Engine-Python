@@ -1,24 +1,3 @@
-#!/usr/bin/env python3
-"""
-Othello (Reversi) Solver — Alpha-Beta Engine (Python)
-Single-file, pasteable, and ready to run.
-
-Features:
-- 8x8 2D board representation
-- Negamax search with alpha-beta pruning
-- Move ordering using immediate evaluation
-- Tunable evaluation (material, mobility, positional weights, corner emphasis)
-- CLI: human vs AI (default) and AI vs AI
-- Simple profiling: NODE_COUNT and elapsed time -> nodes/sec
-- Programmatic API functions for integration
-
-Run:
-    python othello_solver.py            # default human (White) vs AI (Black)
-    python othello_solver.py --depth 5  # stronger AI (slower)
-    python othello_solver.py --ai none  # two-human play
-
-Author: ChatGPT (GPT-5 Thinking mini)
-"""
 
 import math
 import random
