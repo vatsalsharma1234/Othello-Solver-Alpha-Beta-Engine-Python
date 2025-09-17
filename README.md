@@ -18,11 +18,4 @@ Uses an 8×8 2D-board representation with a Negamax search + alpha-beta pruning,
 - Profiling hooks (node counting / nodes-per-second) for benchmarking  
 - Roadmap for advanced optimizations (bitboards, Zobrist hashing, transposition tables, iterative deepening)
 
----
 
-## Quick start
-
-1. Save the engine as `othello_solver.py`.  
-2. Run the CLI:
-```bash
-python othello_solver.py
